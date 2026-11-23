@@ -22,6 +22,15 @@ CHAVE_DO_USUARIO = os.getenv("CHAVE_DO_USUARIO") == "1"
 # CONTAS_DB (servidor aberto na web): caminho do SQLite com contas e sessões (ex.: /data/contas.db). Definida, todo o
 # servidor exige login com conta individual aprovada por um admin. Vazia (uso local, HF Spaces), tudo fica aberto.
 CONTAS_DB = os.getenv("CONTAS_DB", "")
+# Memória de casos (app/memoria.py): anotações do professor sobre um aluno, por apelido. DESLIGADA por padrão: guarda dado
+# sobre criança e depende de decisão do grupo (LGPD). Com contas, as tabelas ficam em CONTAS_DB e caem junto com a conta;
+# sem contas (servidor local), ficam em MEMORIA_DB. Em servidor aberto sem login a memória não funciona (não há dono).
+MEMORIA = os.getenv("MEMORIA", "0") == "1"
+MEMORIA_DB = os.getenv("MEMORIA_DB", str(RAIZ / "config" / "memoria.db"))
+MEMORIA_DIAS = int(os.getenv("MEMORIA_DIAS", "180"))  # retenção: a nota some depois disso
+MEMORIA_MAX_CASOS = int(os.getenv("MEMORIA_MAX_CASOS", "50"))
+MEMORIA_MAX_NOTAS = int(os.getenv("MEMORIA_MAX_NOTAS", "40"))  # por caso
+MEMORIA_NOTA_MAX = int(os.getenv("MEMORIA_NOTA_MAX", "500"))  # caracteres por nota
 # Falha fechada: a senha única antiga foi substituída pelas contas. Um ambiente antigo não pode deixar o servidor aberto.
 if "ACESSO_SENHA" in os.environ:
     raise SystemExit("ACESSO_SENHA não é mais usada: o acesso agora é por contas individuais. Remova ACESSO_SENHA do "

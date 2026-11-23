@@ -14,9 +14,9 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Stre
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import conexoes, contas
+from . import conexoes, contas, memoria
 from .config import (CHAVE_DO_USUARIO, CONDICAO, CONDICOES, CONEXOES_LOCAL, CONTAS_DB, EXPERIMENTO, EXPERIMENTOS, LIMIAR_COBERTURA,
-                     MODELO_EMBED, MODELO_LLM, MODELOS_PERMITIDOS, ORCAMENTO_CONTEXTO, RAIZ)
+                     MEMORIA, MODELO_EMBED, MODELO_LLM, MODELOS_PERMITIDOS, ORCAMENTO_CONTEXTO, RAIZ)
 from .llm import modelos_disponiveis, resolver
 from .pipeline import ROTULOS, responder
 from .prompts import PROMPT_SISTEMA, VERSAO_PROMPT
@@ -274,6 +274,18 @@ def servidor_local(request: Request) -> bool:
     return host in ("127.0.0.1", "::1") and not any(h in request.headers for h in _PROXY_HDRS)
 
 
+def dono_da_memoria(request: Request) -> str | None:
+    """Quem é o dono das anotações desta requisição, ou None se a memória não vale aqui.
+    Com contas: o usuário da sessão. Servidor local sem login: "local". Servidor aberto sem login (ex.: Hugging Face Space,
+    disco efêmero, ninguém identificado): sem memória. Desligada por padrão (MEMORIA=0)."""
+    if not MEMORIA:
+        return None
+    if contas.ativo():
+        conta = getattr(request.state, "conta", None)
+        return conta["usuario"] if conta else None
+    return memoria.LOCAL if servidor_local(request) else None
+
+
 def exigir_local(request: Request) -> None:
     if not servidor_local(request):
         raise HTTPException(403, "Conexões só podem ser configuradas no servidor local.")
@@ -341,6 +353,7 @@ def status(request: Request):
         "conexoes_editaveis": servidor_local(request),
         "chave_do_usuario": CHAVE_DO_USUARIO,
         "login_ativo": contas.ativo(),
+        "memoria": dono_da_memoria(request) is not None,
         "conta": request.state.conta,
         "remoto": [{"provedor": c["provedor"], "rotulo": c["rotulo"], "pais": c["pais"], "configurada": c["configurada"] or CHAVE_DO_USUARIO}
                    for c in conexoes.publico()],
@@ -353,6 +366,33 @@ def status(request: Request):
         "limiar_cobertura": LIMIAR_COBERTURA,
         "versao_prompt": VERSAO_PROMPT,
     }
+
+
+@app.get("/api/memoria")
+def memoria_listar(request: Request):
+    """Casos e notas do dono da requisição (só ele os vê)."""
+    dono = dono_da_memoria(request)
+    if dono is None:
+        return {"ativa": False, "casos": []}
+    return {"ativa": True, "dias": memoria.MEMORIA_DIAS, "casos": memoria.listar(dono)}
+
+
+@app.delete("/api/memoria/{caso_id}", dependencies=[Depends(exigir_mesma_origem)])
+def memoria_apagar_caso(caso_id: int, request: Request):
+    dono = dono_da_memoria(request)
+    if dono is None:
+        raise HTTPException(404, "A memória não está ativa aqui.")
+    if not memoria.esquecer_caso(dono, caso_id=caso_id):
+        raise HTTPException(404, "Caso não encontrado.")
+    return {"ok": True}
+
+
+@app.delete("/api/memoria", dependencies=[Depends(exigir_mesma_origem)])
+def memoria_apagar_tudo(request: Request):
+    dono = dono_da_memoria(request)
+    if dono is None:
+        raise HTTPException(404, "A memória não está ativa aqui.")
+    return {"ok": True, "notas_apagadas": memoria.esquecer_tudo(dono)}
 
 
 @app.get("/api/prompt")
@@ -429,7 +469,8 @@ class _StreamQueFecha(StreamingResponse):
 
 
 @app.post("/api/perguntar")
-def perguntar(p: Pergunta, chave: str | None = Depends(chave_do_cabecalho)):
+def perguntar(p: Pergunta, request: Request, chave: str | None = Depends(chave_do_cabecalho)):
+    dono = dono_da_memoria(request)
     modelo = p.modelo or MODELO_LLM
     provedor, nome = resolver(modelo)
     if provedor == "ollama":
@@ -443,8 +484,17 @@ def perguntar(p: Pergunta, chave: str | None = Depends(chave_do_cabecalho)):
         chave = None  # modelo local não usa chave
 
     def gerar():
+        if dono:  # comandos da memória ("anote…", "o que você anotou…", "esqueça…"): resolvidos por regra, sem modelo e sem traço
+            cmd = memoria.interpretar(p.pergunta)
+            if cmd:
+                texto = memoria.executar(dono, cmd)
+                yield json.dumps({"tipo": "final", "desfecho": "memoria", "resposta": texto, "traco": {"desfecho": "memoria"}},
+                                 ensure_ascii=False) + "\n"
+                return
+        # a ficha (anotações do professor) só vai a modelo local; com modelo remoto o pipeline a descarta
+        ficha = memoria.ficha_para(dono, p.pergunta) if dono else None
         if provedor != "ollama":  # o semáforo protege a CPU local; modelo remoto não disputa a máquina
-            for ev in responder(p.pergunta, modelo=modelo, chave=chave):
+            for ev in responder(p.pergunta, modelo=modelo, chave=chave, ficha=ficha):
                 yield json.dumps(ev, ensure_ascii=False) + "\n"
             return
         if not _GERACAO.acquire(timeout=120):
@@ -453,7 +503,7 @@ def perguntar(p: Pergunta, chave: str | None = Depends(chave_do_cabecalho)):
                              ensure_ascii=False) + "\n"
             return
         try:
-            for ev in responder(p.pergunta, modelo=modelo):
+            for ev in responder(p.pergunta, modelo=modelo, ficha=ficha):
                 yield json.dumps(ev, ensure_ascii=False) + "\n"
         finally:
             _GERACAO.release()

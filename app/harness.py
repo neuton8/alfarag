@@ -113,15 +113,23 @@ class Entrada:
     fora_escopo: str = ""  # motivo, quando a pergunta está claramente fora do escopo ("" = dentro)
 
 
+def dado_pessoal(texto: str) -> str | None:
+    """Nome do primeiro dado pessoal encontrado (CPF, telefone, e-mail) ou None. Usado na pergunta e nas notas da memória."""
+    for rx, nome in _PII:
+        if rx.search(texto):
+            return nome
+    return None
+
+
 def checar_entrada(pergunta: str) -> Entrada:
     p = pergunta.strip()
     if len(p) < 8:
         return Entrada(False, "pergunta_vazia", "Escreva a pergunta com um pouco mais de contexto (ano, dificuldade observada).")
     if len(p) > MAX_PERGUNTA_CHARS:
         return Entrada(False, "pergunta_longa", f"A pergunta passou de {MAX_PERGUNTA_CHARS} caracteres. Resuma o caso.")
-    for rx, nome in _PII:
-        if rx.search(p):
-            return Entrada(False, "dado_pessoal", f"A pergunta parece conter dado pessoal ({nome}). Remova-o: o assistente não precisa identificar o aluno (LGPD).")
+    nome = dado_pessoal(p)
+    if nome:
+        return Entrada(False, "dado_pessoal", f"A pergunta parece conter dado pessoal ({nome}). Remova-o: o assistente não precisa identificar o aluno (LGPD).")
     pede = any(rx.search(p) for rx in _PEDE_DIAG)
     return Entrada(True, pede_diagnostico=pede, fora_escopo=fora_do_escopo(p))
 
