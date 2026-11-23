@@ -55,6 +55,9 @@ def main() -> None:
                 "cobertura": r.get("janela", {}).get("cobertura"),
                 "modo_ressalva": r.get("janela", {}).get("modo_ressalva"),
                 "ollama": r.get("traco", {}).get("ollama"), "latencia_s": round(time.time() - t0, 2),
+                # v2.1: como a resposta foi produzida ("json" ou "texto"), tentativas em JSON e tokens do prompt (estimado x real)
+                "versao_prompt": r.get("traco", {}).get("versao_prompt"), "saida": r.get("traco", {}).get("saida"),
+                "estruturado": r.get("traco", {}).get("estruturado"), "tokens_prompt": r.get("traco", {}).get("tokens_prompt"),
             }
             f.write(json.dumps(reg, ensure_ascii=False) + "\n")
             f.flush()
