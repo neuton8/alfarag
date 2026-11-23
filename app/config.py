@@ -28,9 +28,9 @@ if "ACESSO_SENHA" in os.environ:
                      "ambiente e defina CONTAS_DB (ex.: /data/contas.db). Veja 'Servidor aberto na web' no README.")
 
 # Modelos fixos durante cada comparação (Etapa 2 do projeto).
-MODELO_LLM = os.getenv("MODELO_LLM", "qwen3.5:4b-q4_K_M")
+MODELO_LLM = os.getenv("MODELO_LLM", "qwen3.5:2b-q4_K_M")
 MODELO_EMBED = os.getenv("MODELO_EMBED", "bge-m3")
-MODELOS_PERMITIDOS = [m.strip() for m in os.getenv("MODELOS_PERMITIDOS", "qwen3.5:4b-q4_K_M,gemma4:e4b-it-q4_K_M,qwen3.5:2b-q4_K_M").split(",") if m.strip()]
+MODELOS_PERMITIDOS = [m.strip() for m in os.getenv("MODELOS_PERMITIDOS", "qwen3.5:2b-q4_K_M,qwen3.5:4b-q4_K_M,gemma4:e4b-it-q4_K_M").split(",") if m.strip()]
 
 # Experimentos de segmentação (Etapa 3). tokens=None -> segmentação por seção.
 EXPERIMENTOS = {

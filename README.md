@@ -55,7 +55,7 @@ pergunta ──► harness de entrada ──► busca híbrida (BM25 + bge-m3, R
 Requer [Ollama](https://ollama.com) e Python 3.11+.
 
 ```bash
-ollama pull qwen3.5:4b-q4_K_M && ollama pull bge-m3
+ollama pull qwen3.5:2b-q4_K_M && ollama pull bge-m3
 python -m venv .venv && .venv/bin/pip install -r requirements.txt pymupdf
 # o índice E2 já vem no repositório; para regenerar:
 .venv/bin/python scripts/preparar_corpus.py --exp E2 --embed
@@ -89,7 +89,7 @@ do prompt v2.0 (o traço registra `saida` e `estruturado`). Modelo remoto sempre
 | `ESTRUTURADO` | `1` | `0` volta ao texto livre da v2.0 (para comparar no benchmark). |
 | `MAX_RESPOSTA_JSON` | `1200` | Tokens máximos da resposta em JSON (truncado = inválido). |
 | `MAX_PALAVRAS` | `350` | Acima disso o harness só alerta. |
-| `MODELOS_PERMITIDOS` | 4B, gemma4 e 2B | Lista de modelos aceitos pela API (`qwen3.5:2b-q4_K_M` entrou). |
+| `MODELOS_PERMITIDOS` | 2B, 4B e gemma4 | Lista de modelos aceitos pela API. O padrão (`MODELO_LLM`) é o `qwen3.5:2b-q4_K_M`; o 4B continua permitido. |
 
 Para testar o 2B: `ollama pull qwen3.5:2b-q4_K_M` e escolha-o no seletor, ou `scripts/avaliar_respostas.py --modelo qwen3.5:2b-q4_K_M --condicao C6`.
 
