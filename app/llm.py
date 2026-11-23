@@ -56,8 +56,12 @@ def _payload(modelo: str, mensagens: list[dict], stream: bool, temperatura: floa
     }
 
 
-def _ollama_stream(modelo: str, mensagens: list[dict], temperatura: float | None = None) -> Iterator[dict]:
-    with httpx.stream("POST", f"{OLLAMA_URL}/api/chat", json=_payload(modelo, mensagens, True, temperatura, None), timeout=_TIMEOUT) as r:
+def _ollama_stream(modelo: str, mensagens: list[dict], temperatura: float | None = None, formato: dict | None = None,
+                   max_tokens: int | None = None) -> Iterator[dict]:
+    p = _payload(modelo, mensagens, True, temperatura, max_tokens)
+    if formato is not None:  # saída estruturada: JSON schema que o Ollama impõe token a token
+        p["format"] = formato
+    with httpx.stream("POST", f"{OLLAMA_URL}/api/chat", json=p, timeout=_TIMEOUT) as r:
         r.raise_for_status()
         for linha in r.iter_lines():
             if not linha:
@@ -180,11 +184,13 @@ def _remoto_chat(provedor: str, nome: str, mensagens: list[dict], temperatura: f
         raise _erro_remoto(e) from None
 
 
-def chat_stream(modelo: str, mensagens: list[dict], temperatura: float | None = None, chave: str | None = None) -> Iterator[dict]:
-    """Gera eventos {'delta': str} e, ao final, {'fim': {...métricas...}} (mesmo formato nos dois provedores)."""
+def chat_stream(modelo: str, mensagens: list[dict], temperatura: float | None = None, chave: str | None = None,
+                formato: dict | None = None, max_tokens: int | None = None) -> Iterator[dict]:
+    """Gera eventos {'delta': str} e, ao final, {'fim': {...métricas...}} (mesmo formato nos dois provedores).
+    `formato` (JSON schema) é recurso do Ollama; os provedores remotos o ignoram e respondem em texto livre."""
     provedor, nome = resolver(modelo)
     if provedor == "ollama":
-        yield from _ollama_stream(nome, mensagens, temperatura)
+        yield from _ollama_stream(nome, mensagens, temperatura, formato, max_tokens)
     else:
         yield from _remoto_stream(provedor, nome, mensagens, temperatura, chave)
 

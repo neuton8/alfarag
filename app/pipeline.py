@@ -7,13 +7,13 @@ import uuid
 from datetime import datetime, timezone
 from typing import Iterator
 
-from . import conexoes, harness
-from .config import (CASCATA, CONDICAO, CONDICOES, EXPERIMENTO, EXPERIMENTOS, GRUPOS, LIMIAR_EXPERIENCIA,
-                     LIMIAR_RESPALDO, MODELO_EMBED, MODELO_LLM, NUM_CTX, ORCAMENTO_CONTEXTO, RAIZ, REFERENCIAS,
-                     TEMPERATURA, TOP_K_GRUPO, TRACOS_DIR, aprox_tokens)
+from . import conexoes, estruturado, harness
+from .config import (CASCATA, CONDICAO, CONDICOES, ESTRUTURADO, EXPERIMENTO, EXPERIMENTOS, GRUPOS,
+                     LIMIAR_EXPERIENCIA, LIMIAR_RESPALDO, MAX_RESPOSTA_JSON, MODELO_EMBED, MODELO_LLM, NUM_CTX,
+                     ORCAMENTO_CONTEXTO, RAIZ, REFERENCIAS, TEMPERATURA, TOP_K_GRUPO, TRACOS_DIR, aprox_tokens)
 from .indice import carregar, docs_do_grupo, grupo_do_doc, rotulo_pagina, vetor_pergunta
 from .llm import chat_stream, digest, resolver
-from .prompts import PROMPT_SISTEMA, VERSAO_PROMPT, montar_mensagens
+from .prompts import PROMPT_SISTEMA, VERSAO_PROMPT, montar_mensagens, montar_mensagens_json
 
 ROTULOS = {d["id"]: d["rotulo"] for d in json.loads((RAIZ / "corpus" / "documentos.json").read_text(encoding="utf-8"))}
 
@@ -101,7 +101,8 @@ def responder(pergunta: str, modelo: str = MODELO_LLM, exp: str = EXPERIMENTO, c
 
     # 1) Harness de entrada
     ent = harness.checar_entrada(pergunta)
-    traco["entrada"] = {"ok": ent.ok, "motivo": ent.motivo, "pede_diagnostico": ent.pede_diagnostico}
+    traco["entrada"] = {"ok": ent.ok, "motivo": ent.motivo, "pede_diagnostico": ent.pede_diagnostico,
+                        "fora_escopo": ent.fora_escopo}
     if not ent.ok:
         traco.update({"desfecho": "bloqueada", "resposta": ent.mensagem, "latencia_s": round(time.time() - t0, 2)})
         salvar_traco(traco)
@@ -139,6 +140,8 @@ def responder(pergunta: str, modelo: str = MODELO_LLM, exp: str = EXPERIMENTO, c
         yield {"tipo": "final", "desfecho": "erro", "resposta": msg, "traco": traco}
         return
     modo = decidir_modo(cob_ref.coberta, cob_exp.coberta) if por_grupo else ("unico" if cob_ref.coberta else "sem_cobertura")
+    if ent.fora_escopo:  # série/matéria claramente fora do escopo: recusa sem chamar o modelo, mesmo com cosseno acima do limiar
+        modo = "sem_cobertura"
 
     # Janela: referências primeiro (numeradas [1..k]), relatos depois.
     if modo == "referencia+experiencia":
@@ -160,6 +163,7 @@ def responder(pergunta: str, modelo: str = MODELO_LLM, exp: str = EXPERIMENTO, c
         "referencia": _cob_dict(cob_ref),
         "experiencia": _cob_dict(cob_exp) if por_grupo else None,
         "confirmacao": confirmacao,
+        "fora_escopo": ent.fora_escopo or None,
     }
     janela = {
         "sistema": {"versao": VERSAO_PROMPT, "tokens": aprox_tokens(PROMPT_SISTEMA)},
@@ -190,17 +194,30 @@ def responder(pergunta: str, modelo: str = MODELO_LLM, exp: str = EXPERIMENTO, c
         yield {"tipo": "final", "desfecho": "sem_cobertura", "resposta": harness.FRASE_SEM_COBERTURA, "traco": traco}
         return
 
-    # 3) Modelo
-    mensagens = montar_mensagens(pergunta, dentro, ROTULOS, ent.pede_diagnostico, modo)
+    # 3) Modelo. Ollama + ESTRUTURADO: JSON por esquema e o código monta o texto; senão (ou se o JSON não vier íntegro
+    # em duas tentativas) texto livre do prompt v2.0. Modelo remoto sempre em texto livre.
+    usar_json = ESTRUTURADO and provedor == "ollama"
+    texto_json: str | None = None
+    tentativas: list[dict] = []
+    estimado = 0
     bruto = ""
     meta: dict = {}
     try:
-        for ev in chat_stream(modelo, mensagens, temperatura, chave):
-            if "delta" in ev:
-                bruto += ev["delta"]
-                yield {"tipo": "delta", "texto": ev["delta"]}
-            else:
-                meta = ev["fim"]
+        if usar_json:
+            texto_json, bruto, meta, tentativas, estimado = yield from _gerar_json(
+                modelo, pergunta, dentro, ent.pede_diagnostico, modo, temperatura)
+            if texto_json is not None:
+                yield {"tipo": "delta", "texto": texto_json}  # a UI recebe o texto já montado, de uma vez
+        if texto_json is None:
+            mensagens = montar_mensagens(pergunta, dentro, ROTULOS, ent.pede_diagnostico, modo)
+            estimado = aprox_tokens(" ".join(m["content"] for m in mensagens))
+            bruto, meta = "", {}
+            for ev in chat_stream(modelo, mensagens, temperatura, chave):
+                if "delta" in ev:
+                    bruto += ev["delta"]
+                    yield {"tipo": "delta", "texto": ev["delta"]}
+                else:
+                    meta = ev["fim"]
     except Exception as e:  # modelo indisponível, timeout etc.
         detalhe = conexoes.sanitizar(e, chave)[:300]
         if provedor == "ollama":
@@ -212,14 +229,63 @@ def responder(pergunta: str, modelo: str = MODELO_LLM, exp: str = EXPERIMENTO, c
         yield {"tipo": "final", "desfecho": "erro", "resposta": msg, "traco": traco}
         return
 
-    # 4) Harness de saída
-    final, ver = harness.verificar_saida(bruto, dentro, ent.pede_diagnostico, meta.get("done_reason"), modo)
+    # 4) Harness de saída (sobre o texto que o usuário vê: o montado pelo código ou o escrito pelo modelo)
+    final, ver = harness.verificar_saida(texto_json if texto_json is not None else bruto, dentro, ent.pede_diagnostico,
+                                         meta.get("done_reason"), modo, ROTULOS)
+    real = meta.get("prompt_tokens")
+    traco["saida"] = "json" if texto_json is not None else "texto"
+    if usar_json:
+        traco["estruturado"] = {"tentativas": tentativas, "reserva_texto": texto_json is None}
+    # Janela em tokens reais: o campo "tokens" dos trechos é estimado (~4 caracteres/token); o Ollama informa o real.
+    traco["tokens_prompt"] = {"estimado": estimado, "real": real,
+                              "razao": round(real / estimado, 3) if real and estimado else None}
     traco.update({
         "desfecho": "respondida", "resposta_bruta": bruto, "resposta": final, "verificacao": ver.dict(),
         ("ollama" if provedor == "ollama" else "remoto"): meta, "latencia_s": round(time.time() - t0, 2),
     })
     salvar_traco(traco)
     yield {"tipo": "final", "desfecho": "respondida", "resposta": final, "verificacao": ver.dict(), "traco": traco}
+
+
+def _gerar_json(modelo: str, pergunta: str, dentro: list[dict], pede_diagnostico: bool, modo: str,
+                temperatura: float | None):
+    """Gera a resposta em JSON por esquema e monta o texto (app/estruturado.py).
+
+    É um gerador: cede {"tipo": "progresso"} enquanto o modelo escreve, o que permite ao botão "Parar" fechar o gerador e
+    encerrar o Ollama (sem eventos, o fechamento só chegaria depois da resposta inteira). Devolve
+    (texto montado ou None, JSON bruto da última tentativa, métricas dela, tentativas, tokens estimados do prompt).
+    JSON inválido, truncado ou sem fonte válida: uma nova tentativa, com temperatura um pouco maior (com seed fixa e
+    temperatura 0 repetiria a mesma saída) e mais tokens; falhando de novo, devolve None e o pipeline cai no texto livre."""
+    esq = estruturado.esquema(modo, dentro)
+    mensagens = montar_mensagens_json(pergunta, dentro, ROTULOS, pede_diagnostico, modo)
+    estimado = aprox_tokens(" ".join(m["content"] for m in mensagens))
+    tentativas: list[dict] = []
+    bruto, meta = "", {}
+    for n in (1, 2):
+        temp = temperatura if n == 1 else max(TEMPERATURA if temperatura is None else temperatura, 0.3)
+        bruto, meta, vistos = "", {}, 0
+        for ev in chat_stream(modelo, mensagens, temp, formato=esq, max_tokens=MAX_RESPOSTA_JSON * n):
+            if "delta" in ev:
+                bruto += ev["delta"]
+                vistos += 1
+                if vistos % 8 == 0:
+                    yield {"tipo": "progresso", "caracteres": len(bruto)}
+            else:
+                meta = ev["fim"]
+        texto, motivo = None, None
+        if meta.get("done_reason") == "length":
+            motivo = "truncada"
+        elif (dados := estruturado.parse(bruto)) is None:
+            motivo = "json_invalido"
+        else:
+            try:
+                texto = estruturado.renderizar(dados, dentro, modo, ROTULOS)
+            except estruturado.EstruturadoInvalido as e:
+                motivo = f"incompleto: {e}"
+        tentativas.append({"n": n, "motivo": motivo, "resposta_tokens": meta.get("resposta_tokens")})
+        if texto is not None:
+            return texto, bruto, meta, tentativas, estimado
+    return None, bruto, meta, tentativas, estimado
 
 
 def responder_sync(pergunta: str, **kw) -> dict:
