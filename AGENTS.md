@@ -36,6 +36,8 @@ ollama pull qwen3.5:4b-q4_K_M && ollama pull bge-m3
 - **Nunca relaxe uma regra do `app/harness.py` para "fazer passar" um caso.** Recusa de diagnóstico, bloqueio de dado pessoal, verificação de citação e de código BNCC são requisitos, não testes frágeis.
 - **Não invente métrica.** Números de README, artigo e slides vêm de `resultados/` gerados por script.
 - **Não coloque dados de alunos** em benchmark, testes ou traços. Use casos fictícios sem nome.
+- **Memória de casos (`MEMORIA=1`)** guarda só apelido e anotações do professor, por conta, só com modelo local. O texto das notas nunca vai
+  para traço, log, benchmark ou teste (use apelidos fictícios), e nenhuma regra de privacidade de `app/memoria.py` pode ser relaxada.
 - Respostas de referência (`gold_answer`) só mudam com revisão humana registrada na coluna `revisao_humana`.
 - Corpus novo só entra com licença compatível anotada em `corpus/documentos.json`.
 
