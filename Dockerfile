@@ -20,7 +20,7 @@ ENV OLLAMA_MODELS=/opt/ollama-models \
     HOME=/tmp
 RUN ollama serve > /tmp/pull.log 2>&1 & \
     for i in $(seq 1 30); do curl -sf http://127.0.0.1:11434/api/tags >/dev/null && break; sleep 1; done; \
-    ollama pull qwen3.5:4b-q4_K_M && ollama pull bge-m3 && chmod -R a+rX /opt/ollama-models
+    ollama pull qwen3.5:2b-q4_K_M && ollama pull bge-m3 && chmod -R a+rX /opt/ollama-models
 
 COPY app ./app
 COPY web ./web
@@ -31,8 +31,8 @@ COPY resultados/resumo.json resultados/tracos_demo.jsonl ./resultados/
 COPY start.sh ./start.sh
 
 ENV PORT=7860 \
-    MODELO_LLM=qwen3.5:4b-q4_K_M \
-    MODELOS_PERMITIDOS=qwen3.5:4b-q4_K_M \
+    MODELO_LLM=qwen3.5:2b-q4_K_M \
+    MODELOS_PERMITIDOS=qwen3.5:2b-q4_K_M \
     EXPERIMENTO=E2 \
     CONDICAO=C6 \
     TRACOS_DIR=/tmp/tracos

@@ -463,7 +463,7 @@ function renderSelos(reg) {
   const f = reg.final, v = f.verificacao, s = [];
   const d = f.desfecho;
   if (d === "bloqueada") s.push(["bad", "bloqueada antes da busca"]);
-  if (d === "sem_cobertura") s.push(["warn", "recusa sem chamar o modelo"]);
+  if (d === "sem_cobertura") s.push(["warn", f.traco?.decisao?.fora_escopo ? `fora do escopo (${f.traco.decisao.fora_escopo}): recusa sem chamar o modelo` : "recusa sem chamar o modelo"]);
   if (d === "erro" || d === "ocupado") s.push(["bad", d === "erro" ? "erro do modelo" : "servidor ocupado"]);
   if (f.traco?.provedor && f.traco.provedor !== "ollama") s.push(["warn", `modelo remoto (${f.traco.provedor})`]);
   if (v) {
@@ -479,7 +479,11 @@ function renderSelos(reg) {
     if (v.aviso_experiencia_forcado) s.push(["warn", "aviso de “só relatos” inserido pelo sistema"]);
     if (v.relatos_fora_da_secao?.length) s.push(["warn", `relato citado fora da seção: ${v.relatos_fora_da_secao.join(", ")}`]);
     if (v.secao_relatos_ausente) s.push(["warn", "seção de relatos ausente"]);
+    if (v.excesso_palavras) s.push(["warn", `${v.palavras} palavras, acima do limite pedido`]);
+    if (v.autores_fora_das_fontes?.length) s.push(["warn", `autor-ano fora das fontes: ${v.autores_fora_das_fontes.join(", ")}`]);
   }
+  if (f.traco?.saida === "json") s.push(["info", "formato montado pelo código (JSON por esquema)"]);
+  if (f.traco?.estruturado?.reserva_texto) s.push(["warn", "JSON inválido: resposta em texto livre"]);
   $(".selos", reg.el).innerHTML = s.map(([c, t]) => `<span class="selo ${c}">${esc(t)}</span>`).join("");
 }
 
@@ -538,7 +542,9 @@ function renderPainel(reg) {
     j.modo_ressalva ? chk("warn", "Pedido de diagnóstico detectado", "modo ressalva ligado") : chk("ok", "Sem pedido de diagnóstico"),
     enviado
       ? chk("ok", "Fontes cobrem a pergunta", `melhor similaridade ${j.cobertura.melhor_cos} ≥ limiar ${j.cobertura.limiar}`)
-      : chk("bad", "Fontes não cobrem a pergunta", `melhor similaridade ${j.cobertura.melhor_cos} < limiar ${j.cobertura.limiar}: recusa sem chamar o modelo`),
+      : j.decisao?.fora_escopo
+        ? chk("bad", "Pergunta fora do escopo", `${j.decisao.fora_escopo}: recusa sem chamar o modelo`)
+        : chk("bad", "Fontes não cobrem a pergunta", `melhor similaridade ${j.cobertura.melhor_cos} < limiar ${j.cobertura.limiar}: recusa sem chamar o modelo`),
   ];
   if (v) {
     checks.push(v.citacoes_invalidas.length ? chk("bad", "Citação inexistente removida", `[${v.citacoes_invalidas.join("], [")}] não estava na janela`)
@@ -547,6 +553,8 @@ function renderPainel(reg) {
       : chk("ok", "Códigos BNCC conferidos", v.codigos_ok.join(", ") || "nenhum citado"));
     if (v.modo_ressalva) checks.push(v.ressalva_forcada ? chk("warn", "Aviso de diagnóstico inserido pelo sistema", "o modelo não declarou o limite") : chk("ok", "Limite de diagnóstico declarado", "pelo próprio modelo"));
     if (v.truncada) checks.push(chk("warn", "Resposta cortada", "limite de tokens"));
+    if (v.excesso_palavras) checks.push(chk("warn", "Resposta acima do limite de palavras", `${v.palavras} palavras`));
+    if (v.autores_fora_das_fontes?.length) checks.push(chk("warn", "Citação autor-ano sem fonte", v.autores_fora_das_fontes.join(", ")));
     const grupos = ["referencia", "referencia+experiencia", "experiencia"].includes(v.modo);
     if (grupos && v.modo !== "referencia") {
       checks.push(v.fundamentacao_corrigida ? chk("bad", "Fundamentação corrigida pelo sistema", `${v.fundamentacao_corrigida} linha(s) com Sim/Em parte sem citar referência`)

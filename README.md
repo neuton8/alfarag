@@ -28,11 +28,11 @@ Beatriz Luberiaga, Murilo Narciso, Priscila e Ricardo Graco de Souza Lima Castel
 
 | Técnica | Onde |
 |---|---|
-| **Prompt Engineering** | `app/prompts.py` — prompt de sistema versionado (`VERSAO_PROMPT`), formato em 4 partes, regras de citação. |
+| **Prompt Engineering** | `app/prompts.py` — prompt de sistema versionado (`VERSAO_PROMPT`), formato em 4 partes, regras de citação; variante em JSON por esquema (`app/estruturado.py`) em que o código monta o texto. |
 | **Context Engineering** | `app/pipeline.py::selecionar_janela` — top-k + orçamento de tokens; o painel do app mostra o que entrou, o que ficou de fora e por quê. Histórico da conversa **não** entra. |
 | **RAG com corpus, recuperação e citação** | `scripts/preparar_corpus.py` (página impressa + seção), `app/indice.py` (BM25 + bge-m3 + RRF), citações `[n]` com documento e página. |
 | **RAG com avaliação** | `scripts/avaliar_retrieval.py` (Recall@5, MRR), `scripts/julgar_respostas.py` (outro modelo julga com rubrica 0–2), traço JSONL por resposta. |
-| **Harness** | `app/harness.py` — bloqueio de dado pessoal, modo ressalva para pedido de diagnóstico, recusa sem chamar o modelo quando as fontes não cobrem, verificação de citação e de código BNCC na saída, fila de uma geração por vez. |
+| **Harness** | `app/harness.py` — bloqueio de dado pessoal, modo ressalva para pedido de diagnóstico, recusa sem chamar o modelo quando as fontes não cobrem ou a pergunta está claramente fora do escopo (série 4º–9º ano, outra matéria), verificação de citação e de código BNCC na saída, alertas de excesso de palavras e de citação autor-ano sem fonte, fila de uma geração por vez. |
 | **AGENTS.md + Agent Skill** | `AGENTS.md` (regras para agentes de código) e `SKILL.md` (skill de avaliação). |
 
 ## Arquitetura
@@ -41,9 +41,9 @@ Beatriz Luberiaga, Murilo Narciso, Priscila e Ricardo Graco de Souza Lima Castel
 pergunta ──► harness de entrada ──► busca híbrida (BM25 + bge-m3, RRF) ──► cobertura? ──não──► recusa (sem LLM)
                │ dado pessoal → bloqueia                                     │sim
                │ diagnóstico → modo ressalva                                 ▼
-                                                     janela: prompt v1.2 + top-k trechos [n] (≤ orçamento)
+               │ fora do escopo → recusa (sem LLM)    janela: prompt v2.1 + top-k trechos [n] (≤ orçamento)
                                                                              ▼
-                                                     LLM local (Ollama, qwen3.5:4b-q4_K_M)
+                                                     LLM local (Ollama): JSON por esquema → o código monta o texto
                                                                              ▼
                               harness de saída: [n] existe? código BNCC está no trecho? ressalva presente?
                                                                              ▼
@@ -55,7 +55,7 @@ pergunta ──► harness de entrada ──► busca híbrida (BM25 + bge-m3, R
 Requer [Ollama](https://ollama.com) e Python 3.11+.
 
 ```bash
-ollama pull qwen3.5:4b-q4_K_M && ollama pull bge-m3
+ollama pull qwen3.5:2b-q4_K_M && ollama pull bge-m3
 python -m venv .venv && .venv/bin/pip install -r requirements.txt pymupdf
 # o índice E2 já vem no repositório; para regenerar:
 .venv/bin/python scripts/preparar_corpus.py --exp E2 --embed
@@ -68,6 +68,30 @@ Com Docker (só CPU; ver latência medida em `resultados/latencia_cpu.json`):
 ```bash
 docker build -t alfarag . && docker run -p 7860:7860 alfarag
 ```
+
+## Saída estruturada (JSON por esquema)
+
+Com modelo local, o Ollama recebe um esquema JSON (`format`) e devolve campos (`orientacao`, `atividade`, `acompanhamento` e,
+quando há relatos, `relatos`). O **código** monta o texto final no mesmo formato do prompt v2.0 (`app/estruturado.py`): títulos,
+linha *Fundamentado nas referências* e lista de fontes não dependem mais de o modelo obedecer ao prompt. Em cada campo o esquema
+só deixa citar números do grupo certo (referências nas três seções, relatos na seção de relatos), então citação inexistente e relato
+fora da seção não ocorrem. O harness de saída roda sobre o texto montado, sem nenhuma regra relaxada.
+
+O traço registra `tokens_prompt` (tokens estimados × reais informados pelo Ollama). Na medição local de 23/11 a estimativa de
+4 caracteres por token sobre o prompt inteiro acertou (razão mediana 1,02); o orçamento de 3.200 tokens conta só os trechos, e
+o prompt de sistema, as instruções e a pergunta (~1.000 tokens) ficam por fora dele de propósito.
+
+Se o JSON vier inválido, truncado ou sem fonte válida, há uma segunda tentativa; falhando de novo, o pipeline cai no texto livre
+do prompt v2.0 (o traço registra `saida` e `estruturado`). Modelo remoto sempre responde em texto livre.
+
+| Variável | Padrão | Efeito |
+|---|---|---|
+| `ESTRUTURADO` | `1` | `0` volta ao texto livre da v2.0 (para comparar no benchmark). |
+| `MAX_RESPOSTA_JSON` | `1200` | Tokens máximos da resposta em JSON (truncado = inválido). |
+| `MAX_PALAVRAS` | `350` | Acima disso o harness só alerta. |
+| `MODELOS_PERMITIDOS` | 2B, 4B e gemma4 | Lista de modelos aceitos pela API. O padrão (`MODELO_LLM`) é o `qwen3.5:2b-q4_K_M`; o 4B continua permitido. |
+
+Para testar o 2B: `ollama pull qwen3.5:2b-q4_K_M` e escolha-o no seletor, ou `scripts/avaliar_respostas.py --modelo qwen3.5:2b-q4_K_M --condicao C6`.
 
 ## Modelos remotos (opcional)
 

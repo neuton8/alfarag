@@ -28,9 +28,9 @@ if "ACESSO_SENHA" in os.environ:
                      "ambiente e defina CONTAS_DB (ex.: /data/contas.db). Veja 'Servidor aberto na web' no README.")
 
 # Modelos fixos durante cada comparação (Etapa 2 do projeto).
-MODELO_LLM = os.getenv("MODELO_LLM", "qwen3.5:4b-q4_K_M")
+MODELO_LLM = os.getenv("MODELO_LLM", "qwen3.5:2b-q4_K_M")
 MODELO_EMBED = os.getenv("MODELO_EMBED", "bge-m3")
-MODELOS_PERMITIDOS = [m.strip() for m in os.getenv("MODELOS_PERMITIDOS", "qwen3.5:4b-q4_K_M,gemma4:e4b-it-q4_K_M").split(",") if m.strip()]
+MODELOS_PERMITIDOS = [m.strip() for m in os.getenv("MODELOS_PERMITIDOS", "qwen3.5:2b-q4_K_M,qwen3.5:4b-q4_K_M,gemma4:e4b-it-q4_K_M").split(",") if m.strip()]
 
 # Experimentos de segmentação (Etapa 3). tokens=None -> segmentação por seção.
 EXPERIMENTOS = {
@@ -73,6 +73,15 @@ CANDIDATOS = int(os.getenv("CANDIDATOS", "20"))  # candidatos de cada busca ante
 RRF_K = 60
 MAX_RESPOSTA = int(os.getenv("MAX_RESPOSTA", "900"))
 TEMPERATURA = float(os.getenv("TEMPERATURA", "0.2"))
+# Saída estruturada: o Ollama devolve um JSON que obedece a um esquema e o CÓDIGO monta o texto (app/estruturado.py).
+# ESTRUTURADO=0 volta ao texto livre do prompt v2.0, para comparar no benchmark (como CASCATA=0). Modelo remoto sempre usa texto livre.
+ESTRUTURADO = os.getenv("ESTRUTURADO", "1") == "1"
+MAX_RESPOSTA_JSON = int(os.getenv("MAX_RESPOSTA_JSON", "1200"))  # o JSON gasta mais tokens que o texto; truncado = inválido
+# Janela em tokens reais: o traço registra os tokens estimados (~4 caracteres/token) e os reais do Ollama (`tokens_prompt`). Na medição
+# local de 23/11 (qwen3.5 2B, 27 respostas) a estimativa sobre o PROMPT INTEIRO acertou (razão real/estimado: mediana 1,02; real de 2.930 a
+# 4.564 tokens, em NUM_CTX 8192). O que ficava de fora da conta era o andaime (prompt de sistema, instruções do modo, cabeçalhos e a
+# pergunta, ~1.000 tokens): ORCAMENTO_CONTEXTO conta só os trechos, por desenho.
+MAX_PALAVRAS = int(os.getenv("MAX_PALAVRAS", "350"))  # limite pedido no prompt; o harness só alerta quando passa
 
 # Harness: limiar de cobertura (similaridade de cosseno do melhor trecho, bge-m3).
 LIMIAR_COBERTURA = float(os.getenv("LIMIAR_COBERTURA", "0.55"))

@@ -12,7 +12,9 @@ from .indice import grupo_do_doc, rotulo_pagina
 # v2.0: fontes separadas por grupo (documentos oficiais, produção científica, relatos de experiência) e
 # instrução por modo da tabela de decisão (seção "Relatos de experiência", identificada pelo canal, com a linha
 # "Fundamentado nas referências: Sim / Em parte — <tipo> [n] / Não encontrado nas referências").
-VERSAO_PROMPT = "v2.0"
+# v2.1: acrescenta a variante em JSON por esquema (PROMPT_SISTEMA_JSON, montar_mensagens_json): o modelo preenche campos e o
+# código monta o texto (app/estruturado.py). O texto livre da v2.0 continua igual e é usado com ESTRUTURADO=0 e como reserva.
+VERSAO_PROMPT = "v2.1"
 
 PROMPT_SISTEMA = """Você é um assistente pedagógico especializado em alfabetização em língua portuguesa brasileira, destinado a professores do 2º e 3º anos do Ensino Fundamental. Responda exclusivamente com base nos documentos recuperados da base de conhecimento, que aparecem numerados entre colchetes no bloco FONTES. Priorize a BNCC para habilidades curriculares e os artigos científicos e o Manual ABC para evidências sobre intervenções em leitura e apoio a estudantes com dislexia.
 
@@ -138,5 +140,72 @@ def montar_mensagens(pergunta: str, trechos: list[dict], rotulos: dict[str, str]
         usuario += f"\n\n{AVISO_DIAGNOSTICO}"
     return [
         {"role": "system", "content": PROMPT_SISTEMA},
+        {"role": "user", "content": usuario},
+    ]
+
+
+# ---------- v2.1: variante em JSON por esquema ----------
+# O formato (títulos, linha de fundamentação, lista de fontes) deixa de ser pedido em linguagem natural: o modelo só preenche
+# campos, o esquema limita quais números cada campo pode citar e app/estruturado.py monta o texto final.
+PROMPT_SISTEMA_JSON = """Você é um assistente pedagógico especializado em alfabetização em língua portuguesa brasileira, destinado a professores do 2º e 3º anos do Ensino Fundamental. Responda exclusivamente com base nos documentos recuperados da base de conhecimento, que aparecem numerados entre colchetes no bloco FONTES. Priorize a BNCC para habilidades curriculares e os artigos científicos e o Manual ABC para evidências sobre intervenções em leitura e apoio a estudantes com dislexia.
+
+Você responde preenchendo um formulário em JSON; o sistema monta o texto final a partir dele.
+
+Regras obrigatórias:
+1. Em cada campo, escreva em "texto" o conteúdo em si, em frases completas em português do Brasil, sem repetir a pergunta do professor. Em "refs", liste apenas os números das fontes que sustentam aquele texto. Não escreva números entre colchetes dentro do texto.
+2. Não invente códigos da BNCC (como EF02LP04), referências bibliográficas ou resultados científicos. Só cite um código BNCC se ele aparecer escrito no trecho.
+3. Não transfira automaticamente exemplos de alfabetização em inglês para o português brasileiro; se usar um artigo em inglês, diga que a evidência vem de estudos em inglês.
+4. Não realize diagnósticos de dislexia, TDAH, TEA ou outros transtornos. Oriente a observação pedagógica, o registro e o encaminhamento profissional quando necessário.
+5. Quando os documentos não contiverem evidências suficientes, diga explicitamente: "Os documentos da base não trazem evidência suficiente sobre isso."
+6. A decisão pedagógica final cabe ao professor e à equipe escolar.
+Somando todos os campos, use no máximo 350 palavras."""
+
+_CAMPOS_BASE = (
+    'Preencha o JSON com: "orientacao" (uma orientação objetiva), "atividade" (uma atividade prática aplicável em sala '
+    'de aula) e "acompanhamento" (uma forma de acompanhar a aprendizagem). Cada um tem "texto" e "refs" (números das fontes usadas).'
+)
+
+INSTRUCAO_JSON_REFERENCIA = _CAMPOS_BASE
+
+INSTRUCAO_JSON_MISTO = (
+    _CAMPOS_BASE + " Baseie esses três campos somente nas REFERÊNCIAS.\n"
+    'Preencha também "relatos": um item para cada RELATO DE EXPERIÊNCIA que você usar, com\n'
+    '- "canal": o nome do canal indicado no cabeçalho do relato;\n'
+    '- "texto": um parágrafo em que o canal é o sujeito da frase, variando o verbo ("Ludimila Lima relata que…", '
+    '"Segundo Prof. Nágida, …"), descrevendo o que foi relatado, sem dar ordens (evite "deve", "é preciso") e sem '
+    "pronomes nem palavras com gênero para quem fala (ela, ele, a professora, o professor);\n"
+    '- "refs": o número do relato;\n'
+    '- "fundamentacao": "Sim" se uma REFERÊNCIA sustenta o relato, "Em parte" se sustenta só parte dele, '
+    '"Não encontrado nas referências" se nenhuma sustenta;\n'
+    '- "refs_fundamentacao": os números das REFERÊNCIAS que sustentam o relato (vazio se não encontrado).'
+)
+
+INSTRUCAO_JSON_EXPERIENCIA = (
+    "ATENÇÃO DO SISTEMA: nenhuma referência da base cobre esta pergunta; as FONTES trazem só RELATOS DE EXPERIÊNCIA "
+    '(resumos de vídeos em que educadores contam a própria prática). Preencha só "relatos": um item para cada relato usado, com\n'
+    '- "canal": o nome do canal indicado no cabeçalho do relato;\n'
+    '- "texto": um parágrafo em que o canal é o sujeito da frase, variando o verbo, descrevendo o que foi relatado, sem dar '
+    'ordens (evite "deve", "é preciso") e sem pronomes nem palavras com gênero para quem fala (ela, ele, a professora, o professor);\n'
+    '- "refs": o número do relato.'
+)
+
+AVISO_DIAGNOSTICO_JSON = AVISO_DIAGNOSTICO + " Escreva essa frase no começo do primeiro campo de texto."
+
+
+def montar_mensagens_json(pergunta: str, trechos: list[dict], rotulos: dict[str, str], pede_diagnostico: bool,
+                          modo: str | None = None) -> list[dict]:
+    """Mesmas FONTES do texto livre; muda só o que se pede ao modelo (campos do JSON, não markdown)."""
+    por_grupo = modo in ("referencia", "referencia+experiencia", "experiencia")
+    usuario = f"FONTES:\n{bloco_fontes(trechos, rotulos, por_grupo)}\n\nPERGUNTA DO PROFESSOR:\n{pergunta}"
+    if modo == "referencia+experiencia":
+        usuario += f"\n\n{INSTRUCAO_JSON_MISTO}"
+    elif modo == "experiencia":
+        usuario += f"\n\n{INSTRUCAO_JSON_EXPERIENCIA}"
+    else:
+        usuario += f"\n\n{INSTRUCAO_JSON_REFERENCIA}"
+    if pede_diagnostico:
+        usuario += f"\n\n{AVISO_DIAGNOSTICO_JSON}"
+    return [
+        {"role": "system", "content": PROMPT_SISTEMA_JSON},
         {"role": "user", "content": usuario},
     ]
