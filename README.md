@@ -114,8 +114,10 @@ notas, para a pergunta "o Juninho está mal?" não cair em `sem_cobertura` por f
 isso fica desligado até o grupo decidir (LGPD). O que o código faz:
 
 - só apelido ou primeiro nome (o harness barra CPF, telefone e e-mail também nas notas, antes de gravar; sobrenome não dá para detectar);
-- cada nota pertence a uma conta e some em cascata quando a conta é excluída; em servidor local sem login o dono é `local`;
-  em servidor aberto sem login (ex.: Hugging Face Space) a memória não funciona;
+- cada nota pertence a uma conta e some em cascata quando a conta é excluída. Sem login o dono é `local`, e só vale para quem
+  acessa por `localhost`/`127.0.0.1` na própria máquina: o cabeçalho `Host` também é conferido, contra DNS rebinding (uma página
+  de outro site que o navegador trata como 127.0.0.1 poderia ler as notas). Em Docker com `-p`/`CONEXOES_LOCAL`, por IP da rede e
+  em servidor aberto sem login (ex.: Hugging Face Space) a memória não funciona: use contas (`CONTAS_DB`);
 - a ficha só vai a modelo **local**: com modelo remoto ela é descartada, porque a pergunta sairia do país;
 - o traço grava só contagens (`memoria: {casos, notas}`), nunca o texto das notas, e os comandos de memória nem geram traço;
 - as notas expiram em `MEMORIA_DIAS` (180); há `GET /api/memoria` e `DELETE /api/memoria[/{id}]`, e o banco nasce com permissão 600.

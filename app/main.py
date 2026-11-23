@@ -274,16 +274,40 @@ def servidor_local(request: Request) -> bool:
     return host in ("127.0.0.1", "::1") and not any(h in request.headers for h in _PROXY_HDRS)
 
 
+def _host_de_loopback(host: str) -> bool:
+    """Host exato de loopback, com porta opcional: localhost, 127.0.0.1 ou [::1]. Sem urlparse, que aceita lixo depois dos colchetes."""
+    host = host.strip().lower()
+    if host.startswith("["):  # IPv6 literal: só [::1], com ou sem :porta
+        nome, _, resto = host[1:].partition("]")
+        return nome == "::1" and (resto == "" or (resto.startswith(":") and resto[1:].isdigit()))
+    nome, _, porta = host.partition(":")
+    return nome in ("localhost", "127.0.0.1") and (porta == "" or porta.isdigit())
+
+
+def loopback_estrito(request: Request) -> bool:
+    """Acesso sem login que só a própria máquina consegue fazer: cliente em loopback, sem proxy na frente E cabeçalho Host de
+    loopback. A checagem do Host barra DNS rebinding (uma página de outro site que o navegador passa a tratar como 127.0.0.1:
+    a conexão vem do loopback, mas o Host é o do atacante). Diferente de servidor_local, NÃO vale com CONEXOES_LOCAL, em que
+    qualquer cliente da rede aparece como "local", e quem fala direto com a porta forja o Host à vontade."""
+    if CHAVE_DO_USUARIO:
+        return False
+    cliente = request.client.host if request.client else ""
+    if cliente not in ("127.0.0.1", "::1") or any(h in request.headers for h in _PROXY_HDRS):
+        return False
+    return _host_de_loopback(request.headers.get("host", ""))
+
+
 def dono_da_memoria(request: Request) -> str | None:
     """Quem é o dono das anotações desta requisição, ou None se a memória não vale aqui.
-    Com contas: o usuário da sessão. Servidor local sem login: "local". Servidor aberto sem login (ex.: Hugging Face Space,
-    disco efêmero, ninguém identificado): sem memória. Desligada por padrão (MEMORIA=0)."""
+    Com contas: o usuário da sessão (cookie SameSite=Strict, que o domínio de um atacante não recebe). Sem login: "local", só
+    com loopback_estrito (acesso por localhost/127.0.0.1 na própria máquina). Servidor aberto sem login (ex.: Hugging Face
+    Space, disco efêmero, ninguém identificado) e Docker com CONEXOES_LOCAL: sem memória; use contas. Desligada por padrão."""
     if not MEMORIA:
         return None
     if contas.ativo():
         conta = getattr(request.state, "conta", None)
         return conta["usuario"] if conta else None
-    return memoria.LOCAL if servidor_local(request) else None
+    return memoria.LOCAL if loopback_estrito(request) else None
 
 
 def exigir_local(request: Request) -> None:

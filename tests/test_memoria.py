@@ -10,7 +10,7 @@ from .test_estruturado import FIM, Ollama, _json_do_esquema, _ref, _relato
 from .test_login import ADMIN, ORIGEM, PROF, SENHA_ADMIN, SENHA_PROF, cliente, entrar, login, prof_ativa  # noqa: F401  (fixture `login`)
 
 NOTA = "troca b e d ao escrever"
-LOCAL = {"Origin": "http://testserver", "Content-Type": "application/json"}
+LOCAL = {"Origin": "http://localhost:7860", "Content-Type": "application/json"}
 
 
 @pytest.fixture
@@ -24,7 +24,7 @@ def mem(tmp_path, monkeypatch):
 
 @pytest.fixture
 def local():
-    return TestClient(main.app, client=("127.0.0.1", 50000))
+    return TestClient(main.app, base_url="http://localhost:7860", client=("127.0.0.1", 50000))
 
 
 def _ndjson(resp):
@@ -201,8 +201,8 @@ def test_comando_de_memoria_exige_mesma_origem(mem, local):
         assert local.post("/api/perguntar", json={"pergunta": fala}).status_code == 403                                            # sem Origin
         assert local.post("/api/perguntar", json={"pergunta": fala}, headers={"Origin": "http://evil.example"}).status_code == 403  # outro site
         # POST simples de outro site (text/plain ou sem Content-Type): o FastAPI recente já recusa o corpo (422); versões antigas leem como JSON, e aí vale o 415
-        assert local.post("/api/perguntar", content=corpo, headers={"Origin": "http://testserver", "Content-Type": "text/plain"}).status_code in (415, 422)
-        assert local.post("/api/perguntar", content=corpo, headers={"Origin": "http://testserver"}).status_code in (415, 422)
+        assert local.post("/api/perguntar", content=corpo, headers={"Origin": "http://localhost:7860", "Content-Type": "text/plain"}).status_code in (415, 422)
+        assert local.post("/api/perguntar", content=corpo, headers={"Origin": "http://localhost:7860"}).status_code in (415, 422)
     assert [n["texto"] for n in memoria.listar("local")[0]["notas"]] == [NOTA]  # nada foi apagado nem inserido
     assert local.post("/api/perguntar", json={"pergunta": "Esqueça tudo"}, headers=LOCAL).status_code == 200
     assert memoria.listar("local") == []
@@ -237,6 +237,49 @@ def test_api_apagar_exige_origem_e_so_apaga_o_proprio(mem, local):
     assert len(memoria.listar("ana")) == 1
     memoria.salvar_nota("local", "Maria", "outra nota")
     assert local.delete("/api/memoria", headers=LOCAL).json()["notas_apagadas"] == 1
+
+
+def test_dns_rebinding_nao_le_nem_grava_a_memoria(mem, monkeypatch):
+    """Página de outro site que o navegador trata como 127.0.0.1: a conexão vem do loopback, mas o Host é do atacante."""
+    memoria.salvar_nota("local", "Juninho", NOTA)
+    monkeypatch.setattr(main, "responder", lambda *a, **k: iter([{"tipo": "final", "desfecho": "respondida", "resposta": "ok"}]))
+    for host in ("evil.example:7860", "evil.example", "localhost.evil.example:7860", "127.0.0.1.evil.example"):
+        atacante = TestClient(main.app, base_url="http://" + host, client=("127.0.0.1", 50000))
+        assert atacante.get("/api/status").json()["memoria"] is False
+        assert atacante.get("/api/memoria").json() == {"ativa": False, "casos": []}  # as notas não saem
+        r = atacante.post("/api/perguntar", json={"pergunta": "Esqueça tudo"}, headers={"Origin": f"http://{host}"})
+        assert all(e.get("desfecho") != "memoria" for e in _ndjson(r))               # o comando nem é interpretado
+        assert atacante.delete("/api/memoria", headers={"Origin": f"http://{host}", "Content-Type": "application/json"}).status_code == 404
+    assert len(memoria.listar("local")) == 1                                          # nada foi lido nem apagado
+
+
+@pytest.mark.parametrize("host", ["localhost:7860", "127.0.0.1:7860", "localhost"])
+def test_hosts_de_loopback_continuam_funcionando(mem, host):
+    c = TestClient(main.app, base_url="http://" + host, client=("127.0.0.1", 50000))
+    assert c.get("/api/status").json()["memoria"] is True
+
+
+@pytest.mark.parametrize("host,cliente,esperado", [
+    ("[::1]:7860", "::1", True),                # IPv6 (o TestClient não monta URL com colchetes, então a função é testada direto)
+    ("[::1]", "127.0.0.1", True),
+    ("[::2]:7860", "::1", False),
+    ("[::1].evil.example", "::1", False),
+    ("", "127.0.0.1", False),                   # sem Host
+    ("localhost:7860", "203.0.113.9", False),   # Host de loopback, mas o cliente não é a própria máquina
+])
+def test_loopback_estrito_direto(host, cliente, esperado):
+    from starlette.requests import Request
+    cab = [(b"host", host.encode())] if host else []
+    assert main.loopback_estrito(Request({"type": "http", "headers": cab, "client": (cliente, 50000)})) is esperado
+
+
+def test_conexoes_local_nao_liga_a_memoria_sem_login(mem, monkeypatch):
+    """Docker com -p ou CONEXOES_LOCAL: qualquer cliente da rede aparece como local e forja o Host. Sem login, sem memória."""
+    monkeypatch.setattr(main, "CONEXOES_LOCAL", True)
+    c = TestClient(main.app, base_url="http://localhost:7860", client=("172.17.0.1", 50000))
+    assert c.get("/api/status").json()["memoria"] is False and c.get("/api/memoria").json()["ativa"] is False
+    com_proxy = TestClient(main.app, base_url="http://localhost:7860", client=("127.0.0.1", 50000))
+    assert com_proxy.get("/api/status", headers={"X-Forwarded-For": "203.0.113.9"}).json()["memoria"] is False
 
 
 def test_servidor_publico_sem_login_nao_tem_memoria(mem, monkeypatch):
