@@ -13,18 +13,25 @@ Depois do modelo, nos modos da tabela de decisão (prompt v2.0):
     científica); citando só relato ou nada, a linha vira "Não encontrado nas referências";
   * no modo "experiencia", a resposta tem de avisar que a orientação não foi encontrada nas referências;
   * no modo "referencia+experiencia", relato citado fora da seção "Relatos de experiência" gera alerta.
+Acrescentadas na v2.1 (só somam verificações; nenhuma regra acima foi relaxada):
+  * pergunta claramente fora do escopo (série 4º–9º ano ou matéria de outra área, sem tema de alfabetização) -> recusa
+    SEM chamar o modelo, no mesmo caminho da falta de cobertura;
+  * código BNCC malformado (EF02LP4) passa a ser capturado e removido se não constar literalmente nas fontes;
+  * alerta quando a resposta passa do limite de palavras pedido no prompt;
+  * alerta para citação autor-ano (Silva, 2020) cujo autor não aparece em nenhuma fonte da janela.
 """
 from __future__ import annotations
 
 import re
 from dataclasses import asdict, dataclass, field
 
-from .config import LIMIAR_COBERTURA, MAX_PERGUNTA_CHARS, REFERENCIAS
+from .config import LIMIAR_COBERTURA, MAX_PALAVRAS, MAX_PERGUNTA_CHARS, REFERENCIAS
 from .indice import grupo_do_doc
 from .prompts import ETIQUETA_GRUPO, PREFIXO_FUNDAMENTACAO
 
 # Código BNCC; os quadros de Habilidades Essenciais desdobram alguns com uma letra (EF02LP01A).
-BNCC_RE = re.compile(r"\b(EF\d{2}LP\d{2}[A-Z]?)\b")
+# 1 a 3 dígitos no fim: "EF02LP4" (inventado e malformado) também é capturado e removido se não estiver nas fontes.
+BNCC_RE = re.compile(r"\b(EF\d{2}LP\d{1,3}[A-Z]?)\b")
 CITA_RE = re.compile(r"\[(\d{1,2}(?:\s*[,;]\s*\d{1,2})*)\]")
 
 _PII = [
@@ -66,12 +73,44 @@ _FUND_RE = re.compile(re.escape(PREFIXO_FUNDAMENTACAO) + r"[ \t]*(Sim|Em parte|N
 MODOS_POR_GRUPO = ("referencia", "referencia+experiencia", "experiencia")
 
 
+# Escopo: o corpus cobre alfabetização (1º ao 3º ano). Uma pergunta só é "fora do escopo" quando cita série 4º–9º ano, nível
+# fora do corpus ou matéria de outra área E não fala de alfabetização. "Aluno de 5º ano que ainda não lê" continua dentro.
+# Série só conta com indicador ordinal ("5º ano", "quinto ano"): "criança de 7 anos" é idade, não série.
+_ORDINAIS = {"primeiro": 1, "segundo": 2, "terceiro": 3, "quarto": 4, "quinto": 5, "sexto": 6, "setimo": 7, "sétimo": 7,
+             "oitavo": 8, "nono": 9}
+_SERIE_NUM_RE = re.compile(r"\b(\d{1,2})\s*[ºo°ª]\s*(?:ano|s[ée]rie)\b", re.I)
+_SERIE_EXT_RE = re.compile(r"\b(primeiro|segundo|terceiro|quarto|quinto|sexto|s[ée]timo|oitavo|nono)\s+(?:ano|s[ée]rie)\b", re.I)
+_NIVEL_FORA_RE = re.compile(r"\b(ensino m[ée]dio|anos finais|ensino fundamental ii|ensino superior|faculdade)\b", re.I)
+_MATERIA_FORA_RE = re.compile(
+    r"\b(fra[çc][ãa]o|fra[çc][õo]es|matem[áa]tica|equa[çc][ãa]o|equa[çc][õo]es|geometria|tabuada|qu[íi]mica|geografia|biologia)\b", re.I)
+_ALFABETIZACAO_RE = re.compile(
+    r"alfabetiz|letr|s[íi]laba|fon[êe]m|fonol[óo]g|\bler\b|\bl[êe]\b|\blei\w*|leitur|escrev|escrit|palavra|\brima|dislex|disgraf"
+    r"|ortograf|grafema|decodific", re.I)
+
+
+def fora_do_escopo(pergunta: str) -> str:
+    """Motivo (texto curto) se a pergunta está claramente fora do escopo do corpus; "" se não."""
+    series = {int(m) for m in _SERIE_NUM_RE.findall(pergunta)}
+    series |= {_ORDINAIS[m.lower()] for m in _SERIE_EXT_RE.findall(pergunta)}
+    if any(s <= 3 for s in series) or _ALFABETIZACAO_RE.search(pergunta):
+        return ""  # cita 1º–3º ano ou fala de alfabetização: segue para a busca (o limiar de cobertura decide)
+    fora_serie = sorted(s for s in series if 4 <= s <= 9)
+    if fora_serie:
+        return f"série fora do escopo ({fora_serie[0]}º ano)"
+    if (m := _NIVEL_FORA_RE.search(pergunta)):
+        return f"nível fora do escopo ({m.group(1).lower()})"
+    if (m := _MATERIA_FORA_RE.search(pergunta)):
+        return f"matéria fora do escopo ({m.group(1).lower()})"
+    return ""
+
+
 @dataclass
 class Entrada:
     ok: bool
     motivo: str = ""
     mensagem: str = ""
     pede_diagnostico: bool = False
+    fora_escopo: str = ""  # motivo, quando a pergunta está claramente fora do escopo ("" = dentro)
 
 
 def checar_entrada(pergunta: str) -> Entrada:
@@ -84,7 +123,7 @@ def checar_entrada(pergunta: str) -> Entrada:
         if rx.search(p):
             return Entrada(False, "dado_pessoal", f"A pergunta parece conter dado pessoal ({nome}). Remova-o: o assistente não precisa identificar o aluno (LGPD).")
     pede = any(rx.search(p) for rx in _PEDE_DIAG)
-    return Entrada(True, pede_diagnostico=pede)
+    return Entrada(True, pede_diagnostico=pede, fora_escopo=fora_do_escopo(p))
 
 
 @dataclass
@@ -116,6 +155,10 @@ class Verificacao:
     aviso_experiencia_forcado: bool = False
     relatos_fora_da_secao: list[int] = field(default_factory=list)
     secao_relatos_ausente: bool = False
+    # v2.1 (só alertas)
+    palavras: int = 0                          # palavras da resposta antes da seção Fontes
+    excesso_palavras: bool = False             # passou de MAX_PALAVRAS (limite pedido no prompt)
+    autores_fora_das_fontes: list[str] = field(default_factory=list)  # "Silva (2020)" sem o autor em nenhuma fonte da janela
     veredito: str = "ok"
     alertas: list[str] = field(default_factory=list)
 
@@ -173,9 +216,34 @@ def _verificar_grupos(texto: str, trechos: list[dict], modo: str, v: Verificacao
     return texto
 
 
+_FONTES_RE = re.compile(r"^[ \t]*(?:#{1,6}[ \t]*)?\**[ \t]*Fontes\b", re.I | re.M)
+_MAIUSC, _MINUSC = "A-ZÁÉÍÓÚÂÊÔÃÕÇ", "a-záéíóúâêôãõç"
+# "Silva (2020)", "Hall et al. (2020)", "(Ramli, 2021)", "Hall e Silva, 2019": captura o primeiro sobrenome e o ano.
+_AUTOR_ANO_RE = re.compile(
+    rf"\b([{_MAIUSC}][{_MINUSC}]{{2,}})(?:\s+et\s+al\.?|\s+e\s+[{_MAIUSC}][{_MINUSC}]+)?\s*[,(]\s*((?:19|20)\d{{2}})\b")
+
+
+def _corpo(texto: str) -> str:
+    """A resposta sem a lista de fontes (que pode trazer autor-ano legítimo e não conta no limite de palavras)."""
+    m = _FONTES_RE.search(texto)
+    return texto[: m.start()] if m else texto
+
+
+def _autores_fora_das_fontes(corpo: str, trechos: list[dict], rotulos: dict[str, str] | None) -> list[str]:
+    """Citações autor-ano cujo autor não aparece no texto nem no rótulo de nenhum trecho da janela."""
+    visivel = " ".join(c["texto"] for c in trechos).lower() + " " + " ".join(
+        (rotulos or {}).get(c["doc"], c["doc"]) for c in trechos).lower()
+    achados: list[str] = []
+    for autor, ano in _AUTOR_ANO_RE.findall(corpo):
+        if autor.lower() not in visivel and f"{autor} ({ano})" not in achados:
+            achados.append(f"{autor} ({ano})")
+    return achados
+
+
 def verificar_saida(resposta: str, trechos: list[dict], pede_diagnostico: bool, done_reason: str | None,
-                    modo: str | None = None) -> tuple[str, Verificacao]:
-    """`modo`: da tabela de decisão do pipeline. None ou "unico" (fluxo antigo): só as regras 1–3."""
+                    modo: str | None = None, rotulos: dict[str, str] | None = None) -> tuple[str, Verificacao]:
+    """`modo`: da tabela de decisão do pipeline. None ou "unico" (fluxo antigo): só as regras 1–3.
+    `rotulos` (id do documento -> rótulo) só serve à checagem autor-ano; sem ele, vale o texto dos trechos."""
     v = Verificacao(modo_ressalva=pede_diagnostico, truncada=(done_reason == "length"), modo=modo)
     texto = resposta
 
@@ -211,6 +279,16 @@ def verificar_saida(resposta: str, trechos: list[dict], pede_diagnostico: bool, 
 
     if modo in MODOS_POR_GRUPO:
         texto = _verificar_grupos(texto, trechos, modo, v)
+
+    # 2b) Só alertas (v2.1): tamanho e autor-ano. Não alteram o texto.
+    corpo = _corpo(texto)
+    v.palavras = len(corpo.split())
+    if v.palavras > MAX_PALAVRAS:
+        v.excesso_palavras = True
+        v.alertas.append(f"Resposta com {v.palavras} palavras; o prompt pede no máximo {MAX_PALAVRAS}.")
+    v.autores_fora_das_fontes = _autores_fora_das_fontes(corpo, trechos, rotulos)
+    if v.autores_fora_das_fontes:
+        v.alertas.append(f"Citação autor-ano sem o autor em nenhuma fonte da janela: {', '.join(v.autores_fora_das_fontes)}")
 
     # 3) Modo ressalva: a resposta tem de negar o diagnóstico; se não negar, o sistema força o aviso.
     # Fica por último para o aviso de diagnóstico ser sempre a primeira linha.
