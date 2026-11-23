@@ -482,15 +482,19 @@ def perguntar(p: Pergunta, request: Request, chave: str | None = Depends(chave_d
         raise HTTPException(400, "Informe a sua chave em Conexões para usar o modelo remoto.")
     if provedor == "ollama":
         chave = None  # modelo local não usa chave
+    # Comandos da memória ("anote…", "o que você anotou…", "esqueça…") gravam e apagam: resolvidos por regra, sem modelo e sem traço.
+    # Como qualquer escrita, exigem JSON explícito e Origin igual ao Host: sem cookie (servidor local), uma página de outro site
+    # conseguiria disparar um POST simples e apagar ou inserir notas. Perguntas comuns seguem sem essa exigência, como antes.
+    cmd = memoria.interpretar(p.pergunta) if dono else None
+    if cmd:
+        exigir_mesma_origem(request)
 
     def gerar():
-        if dono:  # comandos da memória ("anote…", "o que você anotou…", "esqueça…"): resolvidos por regra, sem modelo e sem traço
-            cmd = memoria.interpretar(p.pergunta)
-            if cmd:
-                texto = memoria.executar(dono, cmd)
-                yield json.dumps({"tipo": "final", "desfecho": "memoria", "resposta": texto, "traco": {"desfecho": "memoria"}},
-                                 ensure_ascii=False) + "\n"
-                return
+        if cmd:
+            texto = memoria.executar(dono, cmd)
+            yield json.dumps({"tipo": "final", "desfecho": "memoria", "resposta": texto, "traco": {"desfecho": "memoria"}},
+                             ensure_ascii=False) + "\n"
+            return
         # a ficha (anotações do professor) só vai a modelo local; com modelo remoto o pipeline a descarta
         ficha = memoria.ficha_para(dono, p.pergunta) if dono else None
         if provedor != "ollama":  # o semáforo protege a CPU local; modelo remoto não disputa a máquina

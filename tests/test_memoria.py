@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 
 from app import contas, main, memoria, pipeline
 from .test_estruturado import FIM, Ollama, _json_do_esquema, _ref, _relato
-from .test_login import ADMIN, PROF, SENHA_ADMIN, SENHA_PROF, cliente, entrar, login, prof_ativa  # noqa: F401  (fixture `login`)
+from .test_login import ADMIN, ORIGEM, PROF, SENHA_ADMIN, SENHA_PROF, cliente, entrar, login, prof_ativa  # noqa: F401  (fixture `login`)
 
 NOTA = "troca b e d ao escrever"
 LOCAL = {"Origin": "http://testserver", "Content-Type": "application/json"}
@@ -184,13 +184,35 @@ def test_memoria_desligada_por_padrao(local, monkeypatch):
 def test_api_comando_nao_chama_modelo_e_nao_grava_traco(mem, local, monkeypatch):
     chamadas = []
     monkeypatch.setattr(main, "responder", lambda *a, **k: chamadas.append(1) or iter(()))
-    r = local.post("/api/perguntar", json={"pergunta": "Anote sobre o Juninho: " + NOTA})
+    r = local.post("/api/perguntar", json={"pergunta": "Anote sobre o Juninho: " + NOTA}, headers=LOCAL)
     final = _ndjson(r)[-1]
     assert r.status_code == 200 and final["desfecho"] == "memoria" and "Anotei sobre **Juninho**" in final["resposta"]
     assert chamadas == [] and not pipeline.TRACOS_DIR.exists()  # nem modelo, nem traço com o texto da nota
     assert local.get("/api/status").json()["memoria"] is True
     lista = local.get("/api/memoria").json()
     assert lista["ativa"] and lista["casos"][0]["apelido"] == "Juninho" and lista["casos"][0]["notas"][0]["texto"] == NOTA
+
+
+def test_comando_de_memoria_exige_mesma_origem(mem, local):
+    """Sem cookie (servidor local), um POST simples de outra página conseguiria apagar ou inserir notas."""
+    memoria.salvar_nota("local", "Juninho", NOTA)
+    for fala in ("Esqueça tudo", "Esqueça o Juninho", "Anote sobre o Juninho: nota falsa de outro site"):
+        corpo = json.dumps({"pergunta": fala})
+        assert local.post("/api/perguntar", json={"pergunta": fala}).status_code == 403                                            # sem Origin
+        assert local.post("/api/perguntar", json={"pergunta": fala}, headers={"Origin": "http://evil.example"}).status_code == 403  # outro site
+        # POST simples de outro site (text/plain ou sem Content-Type): o FastAPI recente já recusa o corpo (422); versões antigas leem como JSON, e aí vale o 415
+        assert local.post("/api/perguntar", content=corpo, headers={"Origin": "http://testserver", "Content-Type": "text/plain"}).status_code in (415, 422)
+        assert local.post("/api/perguntar", content=corpo, headers={"Origin": "http://testserver"}).status_code in (415, 422)
+    assert [n["texto"] for n in memoria.listar("local")[0]["notas"]] == [NOTA]  # nada foi apagado nem inserido
+    assert local.post("/api/perguntar", json={"pergunta": "Esqueça tudo"}, headers=LOCAL).status_code == 200
+    assert memoria.listar("local") == []
+
+
+def test_pergunta_comum_nao_ganha_checagem_de_origem(mem, local, monkeypatch):
+    """Só os comandos escrevem; quem faz pergunta (curl, scripts, a própria interface) segue como antes."""
+    monkeypatch.setattr(main, "responder", lambda *a, **k: iter([{"tipo": "final", "desfecho": "respondida", "resposta": "ok"}]))
+    assert local.post("/api/perguntar", json={"pergunta": "Como ensinar rimas?"}).status_code == 200
+    assert local.post("/api/perguntar", json={"pergunta": "O Juninho está mal, o que fazer?"}).status_code == 200  # cita um caso, mas não grava
 
 
 def test_api_pergunta_que_cita_o_caso_leva_a_ficha(mem, local, monkeypatch):
@@ -301,11 +323,11 @@ def test_com_login_cada_professora_ve_so_a_propria_memoria(login, mem, monkeypat
     monkeypatch.setattr(main, "responder", lambda *a, **k: iter([{"tipo": "final", "desfecho": "respondida", "resposta": "ok"}]))
     ana, bia = cliente("203.0.113.9"), cliente("198.51.100.1")
     assert entrar(ana, PROF, SENHA_PROF).status_code == 200 and entrar(bia, "prof.bia", "senha-da-bia-12").status_code == 200
-    final = _ndjson(ana.post("/api/perguntar", json={"pergunta": "Anote sobre o Juninho: " + NOTA}))[-1]
+    final = _ndjson(ana.post("/api/perguntar", json={"pergunta": "Anote sobre o Juninho: " + NOTA}, headers=ORIGEM))[-1]
     assert final["desfecho"] == "memoria"
     assert ana.get("/api/memoria").json()["casos"][0]["apelido"] == "Juninho"
     assert bia.get("/api/memoria").json() == {"ativa": True, "dias": memoria.MEMORIA_DIAS, "casos": []}
-    assert "nada salvo" in _ndjson(bia.post("/api/perguntar", json={"pergunta": "o que eu falei antes?"}))[-1]["resposta"]
+    assert "nada salvo" in _ndjson(bia.post("/api/perguntar", json={"pergunta": "o que eu falei antes?"}, headers=ORIGEM))[-1]["resposta"]
     assert cliente().get("/api/memoria").status_code in (303, 401)  # sem sessão não chega
 
 
