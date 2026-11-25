@@ -85,8 +85,10 @@ def salvar_traco(traco: dict) -> None:
 
 
 def responder(pergunta: str, modelo: str = MODELO_LLM, exp: str = EXPERIMENTO, condicao: str = CONDICAO,
-              temperatura: float | None = None, chave: str | None = None) -> Iterator[dict]:
-    """`chave`: chave do usuário para modelo remoto (modo CHAVE_DO_USUARIO). Nunca vai para o traço."""
+              temperatura: float | None = None, chave: str | None = None, ficha: dict | None = None) -> Iterator[dict]:
+    """`chave`: chave do usuário para modelo remoto (modo CHAVE_DO_USUARIO). Nunca vai para o traço.
+    `ficha`: memória de casos ({bloco, busca, casos, notas}, de app/memoria.py). Só vale com modelo local: com modelo remoto
+    é descartada. O traço guarda só as contagens, nunca o texto das notas."""
     t0 = time.time()
     provedor, modelo_id = resolver(modelo)
     traco: dict = {
@@ -100,6 +102,12 @@ def responder(pergunta: str, modelo: str = MODELO_LLM, exp: str = EXPERIMENTO, c
     }
 
     # 1) Harness de entrada
+    if ficha and provedor != "ollama":  # a ficha é dado sobre criança: não sai da máquina
+        ficha = None
+        traco["memoria"] = {"desligada": "modelo remoto"}
+    elif ficha:
+        traco["memoria"] = {"casos": ficha["casos"], "notas": ficha["notas"]}
+    consulta = f"{pergunta}\n{ficha['busca']}" if ficha else pergunta  # a busca também enxerga o que a ficha diz do caso
     ent = harness.checar_entrada(pergunta)
     traco["entrada"] = {"ok": ent.ok, "motivo": ent.motivo, "pede_diagnostico": ent.pede_diagnostico,
                         "fora_escopo": ent.fora_escopo}
@@ -117,17 +125,17 @@ def responder(pergunta: str, modelo: str = MODELO_LLM, exp: str = EXPERIMENTO, c
     confirmacao = None
     try:
         if por_grupo:
-            q = vetor_pergunta(pergunta)  # um embedding só, reaproveitado nas duas buscas
-            c_ref = indice.buscar(pergunta, ref_docs, q_vec=q)
-            c_exp = indice.buscar(pergunta, exp_docs, q_vec=q)
+            q = vetor_pergunta(consulta)  # um embedding só, reaproveitado nas duas buscas
+            c_ref = indice.buscar(consulta, ref_docs, q_vec=q)
+            c_exp = indice.buscar(consulta, exp_docs, q_vec=q)
         else:
-            c_ref, c_exp = indice.buscar(pergunta, CONDICOES[condicao]), []
+            c_ref, c_exp = indice.buscar(consulta, CONDICOES[condicao]), []
         cob_ref = harness.checar_cobertura(c_ref)
         cob_exp = _cobertura(c_exp, LIMIAR_EXPERIENCIA)
         if por_grupo and not cob_ref.coberta and cob_exp.coberta:
             # Busca de confirmação: antes de dizer "não encontrado nas referências", procura nelas a PRÁTICA do melhor relato.
             relato = max(c_exp, key=lambda c: c["cos"])
-            c_conf = indice.buscar(pergunta + "\n" + relato["texto"][:600], ref_docs)
+            c_conf = indice.buscar(consulta + "\n" + relato["texto"][:600], ref_docs)
             cob_conf = _cobertura(c_conf, LIMIAR_RESPALDO)
             confirmacao = {**_cob_dict(cob_conf), "relato": relato["id"]}
             if cob_conf.coberta:
@@ -205,11 +213,11 @@ def responder(pergunta: str, modelo: str = MODELO_LLM, exp: str = EXPERIMENTO, c
     try:
         if usar_json:
             texto_json, bruto, meta, tentativas, estimado = yield from _gerar_json(
-                modelo, pergunta, dentro, ent.pede_diagnostico, modo, temperatura)
+                modelo, pergunta, dentro, ent.pede_diagnostico, modo, temperatura, ficha["bloco"] if ficha else None)
             if texto_json is not None:
                 yield {"tipo": "delta", "texto": texto_json}  # a UI recebe o texto já montado, de uma vez
         if texto_json is None:
-            mensagens = montar_mensagens(pergunta, dentro, ROTULOS, ent.pede_diagnostico, modo)
+            mensagens = montar_mensagens(pergunta, dentro, ROTULOS, ent.pede_diagnostico, modo, ficha["bloco"] if ficha else None)
             estimado = aprox_tokens(" ".join(m["content"] for m in mensagens))
             bruto, meta = "", {}
             for ev in chat_stream(modelo, mensagens, temperatura, chave):
@@ -248,7 +256,7 @@ def responder(pergunta: str, modelo: str = MODELO_LLM, exp: str = EXPERIMENTO, c
 
 
 def _gerar_json(modelo: str, pergunta: str, dentro: list[dict], pede_diagnostico: bool, modo: str,
-                temperatura: float | None):
+                temperatura: float | None, ficha: str | None = None):
     """Gera a resposta em JSON por esquema e monta o texto (app/estruturado.py).
 
     É um gerador: cede {"tipo": "progresso"} enquanto o modelo escreve, o que permite ao botão "Parar" fechar o gerador e
@@ -257,7 +265,7 @@ def _gerar_json(modelo: str, pergunta: str, dentro: list[dict], pede_diagnostico
     JSON inválido, truncado ou sem fonte válida: uma nova tentativa, com temperatura um pouco maior (com seed fixa e
     temperatura 0 repetiria a mesma saída) e mais tokens; falhando de novo, devolve None e o pipeline cai no texto livre."""
     esq = estruturado.esquema(modo, dentro)
-    mensagens = montar_mensagens_json(pergunta, dentro, ROTULOS, pede_diagnostico, modo)
+    mensagens = montar_mensagens_json(pergunta, dentro, ROTULOS, pede_diagnostico, modo, ficha)
     estimado = aprox_tokens(" ".join(m["content"] for m in mensagens))
     tentativas: list[dict] = []
     bruto, meta = "", {}

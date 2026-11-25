@@ -6,3 +6,4 @@ resultados/tracos/
 .env
 resultados/anterior/
 config/conexoes.json
+config/memoria.db*

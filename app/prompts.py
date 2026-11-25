@@ -127,11 +127,17 @@ def bloco_fontes(trechos: list[dict], rotulos: dict[str, str], por_grupo: bool =
     return "\n\n".join(linhas)
 
 
+def _ficha(ficha: str | None) -> str:
+    """Ficha do caso (memória do professor): contexto separado das FONTES, que não é numerado nem citável."""
+    return f"{ficha}\n\n" if ficha else ""
+
+
 def montar_mensagens(pergunta: str, trechos: list[dict], rotulos: dict[str, str], pede_diagnostico: bool,
-                     modo: str | None = None) -> list[dict]:
-    """`modo` vem da tabela de decisão do pipeline. None ou "unico" (fluxo antigo, CASCATA=0): formato antigo."""
+                     modo: str | None = None, ficha: str | None = None) -> list[dict]:
+    """`modo` vem da tabela de decisão do pipeline. None ou "unico" (fluxo antigo, CASCATA=0): formato antigo.
+    `ficha`: bloco da memória de casos (app/memoria.py), só com MEMORIA=1 e modelo local."""
     por_grupo = modo in ("referencia", "referencia+experiencia", "experiencia")
-    usuario = f"FONTES:\n{bloco_fontes(trechos, rotulos, por_grupo)}\n\nPERGUNTA DO PROFESSOR:\n{pergunta}"
+    usuario = f"FONTES:\n{bloco_fontes(trechos, rotulos, por_grupo)}\n\n{_ficha(ficha)}PERGUNTA DO PROFESSOR:\n{pergunta}"
     if modo == "referencia+experiencia":
         usuario += f"\n\n{INSTRUCAO_MISTO}"
     elif modo == "experiencia":
@@ -193,10 +199,10 @@ AVISO_DIAGNOSTICO_JSON = AVISO_DIAGNOSTICO + " Escreva essa frase no começo do 
 
 
 def montar_mensagens_json(pergunta: str, trechos: list[dict], rotulos: dict[str, str], pede_diagnostico: bool,
-                          modo: str | None = None) -> list[dict]:
+                          modo: str | None = None, ficha: str | None = None) -> list[dict]:
     """Mesmas FONTES do texto livre; muda só o que se pede ao modelo (campos do JSON, não markdown)."""
     por_grupo = modo in ("referencia", "referencia+experiencia", "experiencia")
-    usuario = f"FONTES:\n{bloco_fontes(trechos, rotulos, por_grupo)}\n\nPERGUNTA DO PROFESSOR:\n{pergunta}"
+    usuario = f"FONTES:\n{bloco_fontes(trechos, rotulos, por_grupo)}\n\n{_ficha(ficha)}PERGUNTA DO PROFESSOR:\n{pergunta}"
     if modo == "referencia+experiencia":
         usuario += f"\n\n{INSTRUCAO_JSON_MISTO}"
     elif modo == "experiencia":

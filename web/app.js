@@ -463,6 +463,9 @@ function renderSelos(reg) {
   const f = reg.final, v = f.verificacao, s = [];
   const d = f.desfecho;
   if (d === "bloqueada") s.push(["bad", "bloqueada antes da busca"]);
+  if (d === "memoria") s.push(["info", "memória: comando resolvido sem chamar o modelo"]);
+  if (f.traco?.memoria?.casos) s.push(["info", `usou ${f.traco.memoria.casos === 1 ? "a ficha de 1 caso" : `as fichas de ${f.traco.memoria.casos} casos`} (contexto seu, não evidência)`]);
+  if (f.traco?.memoria?.desligada) s.push(["warn", "ficha não enviada: modelo remoto"]);
   if (d === "sem_cobertura") s.push(["warn", f.traco?.decisao?.fora_escopo ? `fora do escopo (${f.traco.decisao.fora_escopo}): recusa sem chamar o modelo` : "recusa sem chamar o modelo"]);
   if (d === "erro" || d === "ocupado") s.push(["bad", d === "erro" ? "erro do modelo" : "servidor ocupado"]);
   if (f.traco?.provedor && f.traco.provedor !== "ollama") s.push(["warn", `modelo remoto (${f.traco.provedor})`]);
@@ -528,7 +531,9 @@ function renderPainel(reg) {
   const p = $("#painel");
   const j = reg.janela, f = reg.final;
   if (!j) {
-    p.innerHTML = f
+    p.innerHTML = f && f.desfecho === "memoria"
+      ? `<div class="vazio-painel"><p>Comando de memória: resolvido por regra. Nenhum modelo foi chamado e nada foi enviado.</p></div>`
+      : f
       ? `<div class="bloco"><h3>Harness de entrada</h3><ul class="checks">${chk("bad", "Pergunta bloqueada antes da busca", f.resposta)}</ul><p class="vazio nada-enviado">Nada foi recuperado nem enviado ao modelo.</p></div>`
       : `<div class="vazio-painel"><p>Verificando a pergunta…</p></div>`;
     return;

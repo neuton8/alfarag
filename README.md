@@ -93,6 +93,45 @@ do prompt v2.0 (o traço registra `saida` e `estruturado`). Modelo remoto sempre
 
 Para testar o 2B: `ollama pull qwen3.5:2b-q4_K_M` e escolha-o no seletor, ou `scripts/avaliar_respostas.py --modelo qwen3.5:2b-q4_K_M --condicao C6`.
 
+## Memória de casos (opcional, desligada por padrão)
+
+Hoje cada pergunta é independente. Com `MEMORIA=1`, o professor pode pedir que o assistente guarde anotações sobre um aluno,
+identificado só pelo **primeiro nome ou apelido**, e usá-las depois:
+
+| Você escreve | O que acontece |
+|---|---|
+| `Anote sobre o Juninho: troca b e d ao escrever` | grava a nota (sem chamar o modelo) |
+| `O que você anotou sobre o Juninho?` / `o que eu falei antes?` | devolve as notas, literais |
+| `Esqueça o Juninho` / `Esqueça tudo` | apaga |
+| `O Juninho está mal, o que fazer?` | a pergunta vai ao modelo **com a ficha do Juninho** como contexto |
+
+Os comandos são reconhecidos por regras (`app/memoria.py`), não por um modelo: um modelo de 2B decidindo o que lembrar gravaria o
+que o professor não pediu. A ficha entra no prompt num bloco **separado das FONTES**, marcado como anotação do professor, que não é
+evidência e não se cita com `[n]`; a numeração das fontes e o harness de saída não mudam. A busca nos documentos também enxerga as
+notas, para a pergunta "o Juninho está mal?" não cair em `sem_cobertura` por falar só do nome.
+
+**Privacidade.** Isto guarda dado sobre criança e **contradiz** a regra anterior de não escrever dado de aluno na pergunta; por
+isso fica desligado até o grupo decidir (LGPD). O que o código faz:
+
+- só apelido ou primeiro nome (o harness barra CPF, telefone e e-mail também nas notas, antes de gravar; sobrenome não dá para detectar);
+- cada nota pertence a uma conta e some em cascata quando a conta é excluída. Sem login o dono é `local`, e só vale para quem
+  acessa por `localhost`/`127.0.0.1` na própria máquina: o cabeçalho `Host` também é conferido, contra DNS rebinding (uma página
+  de outro site que o navegador trata como 127.0.0.1 poderia ler as notas). Em Docker com `-p`/`CONEXOES_LOCAL`, por IP da rede e
+  em servidor aberto sem login (ex.: Hugging Face Space) a memória não funciona: use contas (`CONTAS_DB`);
+- a ficha só vai a modelo **local**: com modelo remoto ela é descartada, porque a pergunta sairia do país;
+- o traço grava só contagens (`memoria: {casos, notas}`), nunca o texto das notas, e os comandos de memória nem geram traço;
+- as notas expiram em `MEMORIA_DIAS` (180); há `GET /api/memoria` e `DELETE /api/memoria[/{id}]`, e o banco nasce com permissão 600.
+
+| Variável | Padrão | Efeito |
+|---|---|---|
+| `MEMORIA` | `0` | `1` liga a memória (exige conta, ou servidor local sem login). |
+| `MEMORIA_DB` | `config/memoria.db` | Banco quando não há `CONTAS_DB`; com contas, as tabelas ficam em `CONTAS_DB`. |
+| `MEMORIA_DIAS` | `180` | Retenção das notas. |
+| `MEMORIA_MAX_CASOS`, `MEMORIA_MAX_NOTAS`, `MEMORIA_NOTA_MAX` | `50`, `40`, `500` | Limites por professor, por caso e por nota. |
+
+Fora do escopo desta versão: levar os últimos turnos da conversa para a janela (custa tokens do orçamento de trechos) e busca
+por texto nas notas (a ficha é achada pelo apelido).
+
 ## Modelos remotos (opcional)
 
 Por padrão tudo roda local. Também é possível gerar a resposta com um modelo remoto
